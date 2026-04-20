@@ -1,0 +1,80 @@
+name: Grade Management Track
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check-structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required files
+        run: |
+          for f in CURRENT_SYSTEM.md README.md REVIEW.md rubric.md; do
+            [ -f "$f" ] || exit 1
+          done
+
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate RFC
+        run: |
+          rfc_files=$(find . -maxdepth 1 -name "*.md" ! -name "PROJECT.md" ! -name "TASK.md" ! -name "REVIEW.md" ! -name "rubric.md" ! -name "CURRENT_SYSTEM.md" ! -name "README.md")
+          [ -n "$rfc_files" ] || exit 1
+          cat $rfc_files > /tmp/rfc_merged.md
+          mermaid_count=$(grep -c '```mermaid' /tmp/rfc_merged.md)
+          graph_hit=$(grep -Eic 'mermaid|graph|flowchart' /tmp/rfc_merged.md)
+          adr_hit=$(grep -Eic 'ADR|Architecture Decision' /tmp/rfc_merged.md)
+          risk_hit=$(grep -Eic 'risk|митиг|mitigation' /tmp/rfc_merged.md)
+          migration_hit=$(grep -Eic 'migration|миграц' /tmp/rfc_merged.md)
+          {
+            echo "## RFC checks"
+            echo "| Metric | Value |"
+            echo "|---|---:|"
+            echo "| Mermaid blocks | $mermaid_count |"
+            echo "| graph hits | $graph_hit |"
+            echo "| ADR hits | $adr_hit |"
+            echo "| risk hits | $risk_hit |"
+            echo "| migration hits | $migration_hit |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$mermaid_count" -gt 0 ] && [ "$adr_hit" -gt 0 ] && [ "$migration_hit" -gt 0 ]
+
+  llm-review:
+    runs-on: ubuntu-latest
+    needs: [check-structure, build-and-test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: LLM review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -e
+          OUT=review_input.txt
+          {
+            echo "# RUBRIC"; cat rubric.md; echo
+          } > "$OUT"
+          for f in $(find . -name '*.md' | sort); do
+            echo "## FILE: $f" >> "$OUT"
+            sed -n '1,220p' "$f" >> "$OUT"
+          done
+          python3 -c "from pathlib import Path; p=Path('review_input.txt'); p.write_text(p.read_text(encoding='utf-8', errors='ignore')[:15000], encoding='utf-8')"
+          PAYLOAD=$(python3 -c "import json, pathlib; prompt=pathlib.Path('review_input.txt').read_text(encoding='utf-8', errors='ignore'); print(json.dumps({'model':'claude-sonnet-4-20250514','max_tokens':2000,'messages':[{'role':'user','content':prompt+'\n\nОцени строго по рубрике, ответь только JSON.'}]}, ensure_ascii=False))")
+          curl -sS https://api.anthropic.com/v1/messages -H "content-type: application/json" -H "x-api-key: ${ANTHROPIC_API_KEY}" -H "anthropic-version: 2023-06-01" -d "$PAYLOAD" > anthropic_response.json
+          python3 -c "import json, pathlib; raw=json.loads(pathlib.Path('anthropic_response.json').read_text(encoding='utf-8', errors='ignore')); text=raw.get('content',[{}])[0].get('text','') if isinstance(raw.get('content'),list) else ''; pathlib.Path('llm_review.json').write_text(text, encoding='utf-8'); print(text)"
+          {
+            echo "## LLM review"
+            echo
+            echo '\`\`\`json'
+            cat llm_review.json
+            echo
+            echo '\`\`\`'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llm-review-management
+          path: |
+            review_input.txt
+            anthropic_response.json
+            llm_review.json
