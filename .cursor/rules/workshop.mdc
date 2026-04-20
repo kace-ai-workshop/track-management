@@ -1,0 +1,12 @@
+---
+description: Workshop rules
+globs: "**/*"
+---
+
+# Workshop rules
+
+- Ты помогаешь написать RFC для миграции монолита.
+- Сначала прочитай `CURRENT_SYSTEM.md`.
+- Формат ответов: Markdown + Mermaid.
+- Аудитория: CTO и архитекторы.
+- Каждая секция RFC — отдельная подзадача.
